@@ -1,0 +1,13 @@
+# Build output
+dist/
+*.exe
+
+# OS / editor cruft
+Thumbs.db
+desktop.ini
+.vs/
+.idea/
+*.user
+
+# Local profile data should never be committed
+ClaudeProfiles/
