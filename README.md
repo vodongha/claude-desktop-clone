@@ -86,6 +86,27 @@ powershell -ExecutionPolicy Bypass -File scripts\Setup.ps1 -Profile Personal,Cli
 powershell -ExecutionPolicy Bypass -File scripts\Setup.ps1 -InstallDir "D:\ClaudeProfiles"
 ```
 
+### Isolate Claude Code / Cowork memory per profile
+
+By default, instances only isolate the **login** (Chromium `--user-data-dir`).
+The embedded **Claude Code / Cowork** still uses the shared `~/.claude` config
+(memory, settings). To give a profile its *own* memory store too, point its
+`CLAUDE_CONFIG_DIR` at a dedicated directory via `-ConfigDir`:
+
+```powershell
+# NOTE: a real hashtable -> call the script directly (not via -File):
+& .\scripts\Setup.ps1 -ConfigDir @{ Personal = "$env:USERPROFILE\.claude-personal" }
+```
+
+Now the **Personal** instance's Claude Code memory lives in
+`~/.claude-personal\projects\<dir>\memory\`, fully separate from the work
+account — and it's the same store the `claude-personal` CLI uses (if you set one
+up). Manual equivalent for any launcher:
+
+```text
+wscript.exe launch.vbs "<profile-data-dir>" "<claude-config-dir>"
+```
+
 ---
 
 ## What gets created

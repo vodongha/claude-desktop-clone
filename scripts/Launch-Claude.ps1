@@ -22,7 +22,12 @@
 #>
 param(
     [Parameter(Mandatory = $true)]
-    [string]$ProfileDir
+    [string]$ProfileDir,
+
+    # Optional: give this instance its own Claude Code / Cowork config + memory
+    # store by pointing CLAUDE_CONFIG_DIR at a dedicated directory. Useful to
+    # keep a personal profile's memory separate from a work one.
+    [string]$ConfigDir
 )
 
 function Show-Error {
@@ -59,6 +64,14 @@ if (-not $exe -or -not (Test-Path $exe)) {
 
 # Ensure the isolated data directory exists.
 New-Item -ItemType Directory -Force -Path $ProfileDir | Out-Null
+
+# Optionally isolate Claude Code / Cowork config + memory for this instance.
+# Start-Process inherits this process's environment, so the launched app (and
+# any claude-code it spawns) picks up CLAUDE_CONFIG_DIR.
+if ($ConfigDir) {
+    New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
+    $env:CLAUDE_CONFIG_DIR = $ConfigDir
+}
 
 # Launch. Different --user-data-dir => separate singleton lock => parallel instance.
 Start-Process -FilePath $exe -ArgumentList "--user-data-dir=$ProfileDir"

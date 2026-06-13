@@ -25,18 +25,28 @@
     Make the "Work" profile reuse the existing %APPDATA%\Claude login instead of
     a fresh, separate one.
 
+.PARAMETER ConfigDir
+    Optional hashtable mapping a profile name to a Claude Code / Cowork config
+    directory (CLAUDE_CONFIG_DIR). Use this to give a profile its own isolated
+    memory + settings store, separate from any other account.
+
 .EXAMPLE
     .\Setup.ps1
     # Creates "Claude (Work)" and "Claude (Personal)" on the Desktop.
 
 .EXAMPLE
     .\Setup.ps1 -Profile Personal,Side,Client -ReuseDefaultForWork
+
+.EXAMPLE
+    # Personal profile gets its own isolated Claude Code memory store:
+    .\Setup.ps1 -ConfigDir @{ Personal = "$env:USERPROFILE\.claude-personal" }
 #>
 [CmdletBinding()]
 param(
     [string[]]$Profile = @('Work', 'Personal'),
     [string]$InstallDir = (Join-Path $env:USERPROFILE 'ClaudeProfiles'),
-    [switch]$ReuseDefaultForWork
+    [switch]$ReuseDefaultForWork,
+    [hashtable]$ConfigDir = @{}
 )
 
 $ErrorActionPreference = 'Stop'
@@ -75,7 +85,14 @@ foreach ($name in $Profile) {
     $lnkPath = Join-Path $desktop "Claude ($name).lnk"
     $sc = $wsh.CreateShortcut($lnkPath)
     $sc.TargetPath = Join-Path $env:WINDIR 'System32\wscript.exe'
-    $sc.Arguments = '"{0}" "{1}"' -f $vbs, $dataDir
+    if ($ConfigDir.ContainsKey($name)) {
+        $cfg = $ConfigDir[$name]
+        New-Item -ItemType Directory -Force -Path $cfg | Out-Null
+        $sc.Arguments = '"{0}" "{1}" "{2}"' -f $vbs, $dataDir, $cfg
+        Write-Host "      memory/config dir: $cfg"
+    } else {
+        $sc.Arguments = '"{0}" "{1}"' -f $vbs, $dataDir
+    }
     $sc.IconLocation = "$iconExe,0"
     $sc.Description = "Claude Desktop - $name profile"
     $sc.WorkingDirectory = $binDir
