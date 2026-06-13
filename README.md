@@ -235,3 +235,9 @@ không cần Python.
 ## License
 
 [MIT](LICENSE)
+
+---
+
+## Built with
+
+[Claude Code](https://claude.ai/code) by Anthropic. 🤖
