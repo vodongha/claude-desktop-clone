@@ -113,10 +113,12 @@ wscript.exe launch.vbs "<profile-data-dir>" "<claude-config-dir>"
 
 ```
 %USERPROFILE%\ClaudeProfiles\
-├── bin\
-│   ├── Launch-Claude.ps1     # resolves the MSIX exe, launches with --user-data-dir
-│   └── launch.vbs            # runs the .ps1 hidden (no console flash)
-├── Personal\                 # isolated Chromium profile (login, history, cache)
+└── bin\
+    ├── Launch-Claude.ps1     # resolves the MSIX exe, launches with --user-data-dir
+    └── launch.vbs            # runs the .ps1 hidden (no console flash)
+
+%APPDATA%\                     # profile DATA lives here (required for Cowork VM)
+├── Personal\                 # isolated Chromium profile (login, history, cache, VM)
 └── Work\                     # (only if not reusing the default login)
 
 Desktop\
@@ -125,7 +127,9 @@ Desktop\
 ```
 
 The shortcuts point at the copied `bin\` scripts, so you can delete the cloned
-repo afterwards and everything keeps working.
+repo afterwards and everything keeps working. Profile *data* lives under
+`%APPDATA%\<name>` (not under `ClaudeProfiles\`) — this is required so Claude's
+**Cowork** VM can start; see [Cowork limitations](#cowork-vm-limitations) below.
 
 ---
 
@@ -177,6 +181,31 @@ powershell -ExecutionPolicy Bypass -File scripts\Uninstall.ps1 -RemoveData
 | Shortcut does nothing | Run `scripts\Launch-Claude.ps1 -ProfileDir <dir>` directly in PowerShell to see the error. |
 | Second window won't open | Make sure the two shortcuts use **different** `--user-data-dir` paths (check shortcut *Target*). |
 | Icon is blank | Cosmetic only — the app updated and moved. Re-run `Setup.ps1` to refresh the icon path. |
+| **"Failed to start Claude's workspace" / `VHDX file not found`** in a cloned profile | The profile's data dir is **outside `%APPDATA%`**, so the Cowork VM service can't find `rootfs.vhdx`. Re-run `Setup.ps1` (current version puts profiles under `%APPDATA%`). To migrate an existing profile without re-login, move `ClaudeProfiles\<name>` → `%APPDATA%\<name>` and update the shortcut's first argument to `%APPDATA%\<name>`. Do **not** use a junction/symlink for `vm_bundles` — the VM service refuses to open reparse points. |
+| **Cowork won't start in one profile while another is open** (`HYPERVISOR_SERVICE_ERROR`, *"a virtual machine … with the specified identifier already exists"*) | Expected — see [Cowork VM limitations](#cowork-vm-limitations). Only one profile can run the Cowork VM at a time; quit the other profile (or reboot to clear a stale VM) before launching. |
+
+---
+
+## Cowork VM limitations
+
+Claude Desktop's **Cowork** feature (the agentic workspace, scheduled tasks, and
+artifact storage) runs inside a per-machine **Hyper-V VM**, not just an Electron
+window. Two consequences for multi-profile use:
+
+1. **Profile data must live under `%APPDATA%`.** The native VM service resolves
+   the VM image (`rootfs.vhdx`) at `%APPDATA%\<profile-name>\vm_bundles`,
+   *ignoring* `--user-data-dir`. `Setup.ps1` therefore places isolated profiles
+   under `%APPDATA%\<name>` (the `Work`/`-ReuseDefaultForWork` profile already
+   uses `%APPDATA%\Claude`, which is why it works out of the box). A data dir
+   anywhere else makes Cowork fail with `VHDX file not found`.
+
+2. **Only one Cowork VM can run at a time.** The Hyper-V compute system is *not*
+   scoped per profile, so launching Cowork in a second profile while another's
+   VM is running fails with `HYPERVISOR_SERVICE_ERROR` /
+   *"identifier already exists"*. You can keep both **windows** open for chat, but
+   the VM-backed workspace only runs in one profile at a time — quit (or stop the
+   workspace of) the other profile first. The plain chat / login isolation that
+   this tool provides is unaffected.
 
 ---
 
