@@ -5,7 +5,8 @@
 
 .DESCRIPTION
     For each profile name you pass, this script:
-      * creates an isolated Chromium data directory under -InstallDir,
+      * creates an isolated Chromium data directory under %APPDATA% (required so
+        the Cowork VM works -- see the note in the loop below),
       * copies the launcher scripts into -InstallDir\bin (so the shortcuts keep
         working even if you delete this repo),
       * creates a "Claude (<Name>)" shortcut on your Desktop that opens the app
@@ -19,7 +20,10 @@
     One or more profile names. Default: Work, Personal.
 
 .PARAMETER InstallDir
-    Where profile data + launcher scripts live. Default: %USERPROFILE%\ClaudeProfiles.
+    Where the launcher scripts (bin\) live. Default: %USERPROFILE%\ClaudeProfiles.
+    NOTE: profile *data* always lives under %APPDATA%\<name>, not here -- this is
+    required for the Cowork VM to start (the native VM service resolves rootfs.vhdx
+    under %APPDATA% regardless of --user-data-dir).
 
 .PARAMETER ReuseDefaultForWork
     Make the "Work" profile reuse the existing %APPDATA%\Claude login instead of
@@ -77,7 +81,16 @@ foreach ($name in $Profile) {
         $dataDir = Join-Path $env:APPDATA 'Claude'
         Write-Host "  [$name] reuses existing login at $dataDir"
     } else {
-        $dataDir = Join-Path $InstallDir $name
+        # IMPORTANT: isolated profiles must live under %APPDATA% (NOT an arbitrary
+        # folder such as -InstallDir). Claude Desktop's "Cowork" feature runs its
+        # agent inside a Hyper-V VM, and the native VM service resolves the VM image
+        # (rootfs.vhdx) at  %APPDATA%\<profile-name>\vm_bundles  -- it ignores the
+        # --user-data-dir flag. If the data dir lives elsewhere, Electron provisions
+        # the VM under the data dir but the VM service looks under %APPDATA% and dies
+        # with "VHDX file not found", so the Cowork workspace never starts. Putting
+        # the data dir under %APPDATA% makes both components agree (exactly how the
+        # -ReuseDefaultForWork "Work" profile already behaves).
+        $dataDir = Join-Path $env:APPDATA $name
         New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
         Write-Host "  [$name] isolated profile at $dataDir"
     }
