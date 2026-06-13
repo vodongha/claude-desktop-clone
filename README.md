@@ -217,6 +217,14 @@ powershell -ExecutionPolicy Bypass -File scripts\Setup.ps1 -ReuseDefaultForWork
   login lại). Icon Personal mở cửa sổ mới để đăng nhập tài khoản còn lại.
 - Bấm lại icon → focus đúng cửa sổ của tài khoản đó (không mở trùng).
 
+Muốn tách riêng cả **bộ nhớ Claude Code / Cowork** cho từng profile (mặc định
+chỉ tách login, còn `~/.claude` thì dùng chung), trỏ `CLAUDE_CONFIG_DIR` qua
+`-ConfigDir`:
+
+```powershell
+& .\scripts\Setup.ps1 -ConfigDir @{ Personal = "$env:USERPROFILE\.claude-personal" }
+```
+
 Gỡ: `scripts\Uninstall.ps1` (thêm `-RemoveData` để xoá luôn dữ liệu/đăng nhập).
 
 Yêu cầu: Windows 10/11 + đã cài app Claude Desktop. Không cần quyền admin,

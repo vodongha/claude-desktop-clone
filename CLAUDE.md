@@ -29,13 +29,29 @@ its own login.
    activation (`shell:AppsFolder\...!Claude`) does not reliably forward the
    `--user-data-dir` argument; launching the exe path does.
 
+## Optional second isolation layer (`CLAUDE_CONFIG_DIR`)
+
+`--user-data-dir` isolates the **Claude Desktop login** only. The embedded
+**Claude Code / Cowork** still reads the shared `~/.claude` store (memory,
+settings) regardless of which profile launched it. To isolate that too, a
+profile can point `CLAUDE_CONFIG_DIR` at a dedicated directory:
+
+- `Launch-Claude.ps1 -ConfigDir <path>` sets `$env:CLAUDE_CONFIG_DIR` before
+  `Start-Process`. The child app (and any `claude-code` it spawns) inherits it.
+- `launch.vbs` forwards an optional **2nd argument** as that config dir.
+- `Setup.ps1 -ConfigDir @{ Personal = '<path>' }` (a hashtable) wires a profile's
+  shortcut to pass the 3rd `wscript` argument.
+
+This is **additive and optional** — omitting it keeps the shared `~/.claude`
+store, which is the default. Don't make it mandatory or hard-code a path.
+
 ## Layout
 
 ```
 scripts/
-  Launch-Claude.ps1   # resolve exe + Start-Process with --user-data-dir
-  launch.vbs          # run the .ps1 hidden (no console window); finds the .ps1 next to itself
-  Setup.ps1           # installer: copies scripts to %USERPROFILE%\ClaudeProfiles\bin, makes profiles + desktop shortcuts
+  Launch-Claude.ps1   # resolve exe + Start-Process with --user-data-dir; optional -ConfigDir sets CLAUDE_CONFIG_DIR
+  launch.vbs          # run the .ps1 hidden (no console window); finds the .ps1 next to itself; optional 2nd arg = config dir
+  Setup.ps1           # installer: copies scripts to %USERPROFILE%\ClaudeProfiles\bin, makes profiles + desktop shortcuts; -ConfigDir hashtable maps a profile to its own memory store
   Uninstall.ps1       # removes shortcuts (and optionally profile data)
   Build-Exe.ps1       # optional: wrap Launch-Claude.ps1 into an .exe via ps2exe
 ```
@@ -67,6 +83,15 @@ Get-CimInstance Win32_Process -Filter "Name='Claude.exe'" |
 
 A successful run shows `Claude.exe --user-data-dir=...\claude-test` and creates
 a populated `claude-test` folder (Local Storage, lockfile, etc.).
+
+To verify config isolation, add `-ConfigDir` and confirm the env var reaches the
+child process:
+
+```powershell
+.\scripts\Launch-Claude.ps1 -ProfileDir "$env:TEMP\claude-test" -ConfigDir "$env:TEMP\claude-cfg-test"
+# The launched process inherits CLAUDE_CONFIG_DIR=...\claude-cfg-test;
+# the directory is created if missing.
+```
 
 ## Out of scope
 
