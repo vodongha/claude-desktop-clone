@@ -29,6 +29,15 @@ its own login.
    activation (`shell:AppsFolder\...!Claude`) does not reliably forward the
    `--user-data-dir` argument; launching the exe path does.
 
+4. **Icons must point at a stable path, never the versioned exe.** `Setup.ps1`
+   extracts the Claude icon once into `bin\claude.ico` and sets every shortcut's
+   `IconLocation` to that file. Setting `IconLocation` to the versioned
+   `WindowsApps\Claude_<version>\...\Claude.exe` makes icons go blank after the
+   next update deletes that folder. Extract via `PrivateExtractIcons` → render to
+   a `Bitmap` → write a 32-bit **PNG-based `.ico`** by hand. Do **not** use
+   `Icon.Save()`: saving an icon built from an `HICON` drops the colour plane and
+   writes only the 1-bit mask, producing a grey icon.
+
 ## Optional second isolation layer (`CLAUDE_CONFIG_DIR`)
 
 `--user-data-dir` isolates the **Claude Desktop login** only. The embedded
@@ -51,7 +60,7 @@ store, which is the default. Don't make it mandatory or hard-code a path.
 scripts/
   Launch-Claude.ps1   # resolve exe + Start-Process with --user-data-dir; optional -ConfigDir sets CLAUDE_CONFIG_DIR
   launch.vbs          # run the .ps1 hidden (no console window); finds the .ps1 next to itself; optional 2nd arg = config dir
-  Setup.ps1           # installer: copies scripts to %USERPROFILE%\ClaudeProfiles\bin, makes profiles + desktop shortcuts; -ConfigDir hashtable maps a profile to its own memory store
+  Setup.ps1           # installer: copies scripts to %USERPROFILE%\ClaudeProfiles\bin, extracts a stable bin\claude.ico, makes profiles + desktop shortcuts; -ConfigDir hashtable maps a profile to its own memory store
   Uninstall.ps1       # removes shortcuts (and optionally profile data)
   Build-Exe.ps1       # optional: wrap Launch-Claude.ps1 into an .exe via ps2exe
 ```

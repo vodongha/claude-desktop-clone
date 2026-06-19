@@ -115,7 +115,8 @@ wscript.exe launch.vbs "<profile-data-dir>" "<claude-config-dir>"
 %USERPROFILE%\ClaudeProfiles\
 └── bin\
     ├── Launch-Claude.ps1     # resolves the MSIX exe, launches with --user-data-dir
-    └── launch.vbs            # runs the .ps1 hidden (no console flash)
+    ├── launch.vbs            # runs the .ps1 hidden (no console flash)
+    └── claude.ico            # icon extracted to a STABLE path (survives updates)
 
 %APPDATA%\                     # profile DATA lives here (required for Cowork VM)
 ├── Personal\                 # isolated Chromium profile (login, history, cache, VM)
@@ -140,6 +141,11 @@ repo afterwards and everything keeps working. Profile *data* lives under
   per profile.
 - **App updates** are handled automatically: the launcher re-resolves the exe
   path each time via `Get-AppxPackage`.
+- **Shortcut icons survive updates.** `Setup.ps1` extracts the Claude icon once
+  to `bin\claude.ico` (a stable path) and points every shortcut there. Pointing a
+  shortcut straight at the versioned `WindowsApps\Claude_<version>\...\Claude.exe`
+  would go blank after the next update deletes that folder — which is why the
+  icon is copied out to a fixed location instead.
 - **Switching the "main" app:** the regular Start-menu Claude icon still uses
   `%APPDATA%\Claude`, i.e. the same login as a "Work" profile created with
   `-ReuseDefaultForWork`.
@@ -180,7 +186,7 @@ powershell -ExecutionPolicy Bypass -File scripts\Uninstall.ps1 -RemoveData
 | "Claude Desktop app not found" | Install it from [claude.ai/download](https://claude.ai/download) and run `Setup.ps1` again. |
 | Shortcut does nothing | Run `scripts\Launch-Claude.ps1 -ProfileDir <dir>` directly in PowerShell to see the error. |
 | Second window won't open | Make sure the two shortcuts use **different** `--user-data-dir` paths (check shortcut *Target*). |
-| Icon is blank | Cosmetic only — the app updated and moved. Re-run `Setup.ps1` to refresh the icon path. |
+| Icon is blank or grey | Re-run `Setup.ps1` (current versions extract the icon to a stable `bin\claude.ico`, so it survives updates). If a stale thumbnail lingers, clear the icon cache: `ie4uinit.exe -show`, or `Stop-Process -Name explorer -Force; Start-Process explorer`. |
 | **"Failed to start Claude's workspace" / `VHDX file not found`** in a cloned profile | The profile's data dir is **outside `%APPDATA%`**, so the Cowork VM service can't find `rootfs.vhdx`. Re-run `Setup.ps1` (current version puts profiles under `%APPDATA%`). To migrate an existing profile without re-login, move `ClaudeProfiles\<name>` → `%APPDATA%\<name>` and update the shortcut's first argument to `%APPDATA%\<name>`. Do **not** use a junction/symlink for `vm_bundles` — the VM service refuses to open reparse points. |
 | **Cowork won't start in one profile while another is open** (`HYPERVISOR_SERVICE_ERROR`, *"a virtual machine … with the specified identifier already exists"*) | Expected — see [Cowork VM limitations](#cowork-vm-limitations). Only one profile can run the Cowork VM at a time; quit the other profile (or reboot to clear a stale VM) before launching. |
 

@@ -56,6 +56,78 @@ param(
 $ErrorActionPreference = 'Stop'
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+# Extracts the highest-resolution icon out of an .exe into a standalone .ico.
+# This is what makes shortcut icons survive app updates: the Claude .exe lives
+# under C:\Program Files\WindowsApps\Claude_<version>__...\app\Claude.exe, and
+# that <version> folder is DELETED whenever Claude auto-updates. A shortcut whose
+# IconLocation points straight at that versioned path goes blank after the next
+# update + icon-cache rebuild (typically noticed after a reboot). Copying the
+# icon once to a stable file under bin\ and pointing every shortcut there avoids
+# the dangling path entirely.
+function Export-AppIcon {
+    param([string]$ExePath, [string]$IcoPath, [int]$Size = 256)
+    Add-Type -AssemblyName System.Drawing
+    $sig = @'
+[DllImport("user32.dll", CharSet=CharSet.Unicode)]
+public static extern int PrivateExtractIcons(string lpszFile, int nIconIndex, int cxIcon, int cyIcon, IntPtr[] phicon, int[] piconid, int nIcons, int flags);
+[DllImport("user32.dll")]
+public static extern bool DestroyIcon(IntPtr hIcon);
+'@
+    $api = Add-Type -MemberDefinition $sig -Name 'IconExtract' -Namespace 'Win32Native' -PassThru
+
+    # Writes a 32-bit, full-colour, PNG-compressed .ico (Vista+ format) from a
+    # Bitmap. We deliberately do NOT use Icon.Save(): saving an Icon created from
+    # an HICON drops the colour plane and writes only the 1-bit AND mask, which is
+    # why the icon came out grey. Rendering to a Bitmap and packing the PNG
+    # ourselves preserves colour and alpha.
+    function Write-IcoFromBitmap {
+        param([System.Drawing.Bitmap]$Bmp, [string]$Path)
+        $ms = New-Object System.IO.MemoryStream
+        $Bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+        $png = $ms.ToArray(); $ms.Dispose()
+        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Create)
+        $bw = New-Object System.IO.BinaryWriter($fs)
+        $bw.Write([uint16]0)            # reserved
+        $bw.Write([uint16]1)            # type = icon
+        $bw.Write([uint16]1)            # image count
+        $dim = if ($Bmp.Width -ge 256) { 0 } else { [byte]$Bmp.Width }   # 0 means 256
+        $bw.Write([byte]$dim)           # width
+        $bw.Write([byte]$dim)           # height
+        $bw.Write([byte]0)              # palette count
+        $bw.Write([byte]0)              # reserved
+        $bw.Write([uint16]1)            # colour planes
+        $bw.Write([uint16]32)           # bits per pixel
+        $bw.Write([uint32]$png.Length)  # image size
+        $bw.Write([uint32]22)           # offset = 6 (dir) + 16 (entry)
+        $bw.Write($png)
+        $bw.Flush(); $bw.Close()
+    }
+
+    $h = New-Object IntPtr[] 1
+    $id = New-Object int[] 1
+    try {
+        $n = $api::PrivateExtractIcons($ExePath, 0, $Size, $Size, $h, $id, 1, 0)
+        if ($n -gt 0 -and $h[0] -ne [IntPtr]::Zero) {
+            $ico = [System.Drawing.Icon]::FromHandle($h[0])
+            $bmp = $ico.ToBitmap()       # full 32bpp colour + alpha
+            Write-IcoFromBitmap -Bmp $bmp -Path $IcoPath
+            $bmp.Dispose(); $ico.Dispose()
+            return $true
+        }
+    } catch {
+    } finally {
+        if ($h[0] -ne [IntPtr]::Zero) { $api::DestroyIcon($h[0]) | Out-Null }
+    }
+    # Fallback: managed helper (lower-res, but still full colour and a stable file).
+    try {
+        $ico = [System.Drawing.Icon]::ExtractAssociatedIcon($ExePath)
+        $bmp = $ico.ToBitmap()
+        Write-IcoFromBitmap -Bmp $bmp -Path $IcoPath
+        $bmp.Dispose(); $ico.Dispose()
+        return $true
+    } catch { return $false }
+}
+
 # --- Verify the Claude Desktop app is installed and find its icon ---------
 $pkg = Get-AppxPackage -Name '*Claude*' -ErrorAction SilentlyContinue |
     Sort-Object Version -Descending | Select-Object -First 1
@@ -71,6 +143,19 @@ New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 Copy-Item (Join-Path $scriptRoot 'Launch-Claude.ps1') $binDir -Force
 Copy-Item (Join-Path $scriptRoot 'launch.vbs') $binDir -Force
 $vbs = Join-Path $binDir 'launch.vbs'
+
+# --- Extract the Claude icon to a STABLE path (survives app updates) -------
+# See Export-AppIcon above for why pointing IconLocation at the versioned
+# WindowsApps .exe makes icons disappear after updates/reboots.
+$icoPath = Join-Path $binDir 'claude.ico'
+if (Export-AppIcon -ExePath $iconExe -IcoPath $icoPath) {
+    $iconLocation = "$icoPath,0"
+    Write-Host "Extracted stable icon to $icoPath" -ForegroundColor Green
+} else {
+    # Last resort: fall back to the versioned exe (may go blank after an update).
+    $iconLocation = "$iconExe,0"
+    Write-Warning "Could not extract a standalone icon; falling back to the app exe (icon may break after updates)."
+}
 
 # --- Create a profile + desktop shortcut for each name --------------------
 $desktop = [Environment]::GetFolderPath('Desktop')
@@ -106,7 +191,7 @@ foreach ($name in $Profile) {
     } else {
         $sc.Arguments = '"{0}" "{1}"' -f $vbs, $dataDir
     }
-    $sc.IconLocation = "$iconExe,0"
+    $sc.IconLocation = $iconLocation
     $sc.Description = "Claude Desktop - $name profile"
     $sc.WorkingDirectory = $binDir
     $sc.Save()
