@@ -102,6 +102,37 @@ child process:
 # the directory is created if missing.
 ```
 
+## Git workflow
+
+Two long-lived branches, mirroring the `vodongha-personal` setup.
+
+```
+feature/* ──┐
+bug/*    ──→  develop  →  PR → develop (merged)  →  PR → master
+hotfix/* ──────────────────────────────────────→  PR → master
+                                                        ↓
+                                          develop ← auto-synced by sync-develop.yml
+```
+
+| Branch type | Base branch | PR target | When to use |
+|---|---|---|---|
+| `feature/short-description` | `develop` | `develop` | New feature |
+| `bug/short-description` | `develop` | `develop` | Non-urgent fix |
+| `hotfix/short-description` | `master` | `master` | Urgent fix |
+
+- **`master` is the stable branch — never commit directly.** Feature/bug work goes through
+  `develop`; merge `develop → master` to release. Hotfixes branch from `master` and PR straight to
+  it; `develop` picks them up via `sync-develop.yml` (merges `master → develop` after every push to
+  `master`). There is no deploy — `master` is just the published, stable state.
+- `ci.yml` runs **PSScriptAnalyzer** (errors only) on pushes to `develop` and PRs to `master`.
+- Merge with **merge commits** (no squash/rebase). Personal repo — set the identity locally
+  (`git config --local user.email "vodongha@hotmail.com"`). AI-assisted commits are **authored by
+  `vodongha`** with **Claude as the committer**:
+  ```bash
+  GIT_COMMITTER_NAME="Claude Opus 4.8" GIT_COMMITTER_EMAIL="noreply@anthropic.com" \
+    git commit --author="vodongha <vodongha@hotmail.com>" -m "..."
+  ```
+
 ## Out of scope
 
 - Codex / other apps (this repo is Claude-only by design).

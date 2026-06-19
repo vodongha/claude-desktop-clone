@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+    branches: [master]
+
+jobs:
+  lint:
+    name: PSScriptAnalyzer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Analyze PowerShell scripts
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $issues = Invoke-ScriptAnalyzer -Path . -Recurse -Severity Error
+          if ($issues) {
+            $issues | Format-Table -AutoSize
+            Write-Error "PSScriptAnalyzer found $($issues.Count) error(s)."
+            exit 1
+          }
+          Write-Host "No PSScriptAnalyzer errors."
