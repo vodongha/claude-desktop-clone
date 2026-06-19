@@ -1,0 +1,29 @@
+name: Sync develop from master
+
+# Keeps `develop` in step with `master` after every release (or hotfix), so
+# feature branches always start from the latest stable code. Mirrors the
+# vodongha-personal setup.
+on:
+  push:
+    branches: [master]
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge master into develop
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Create develop from master if it doesn't exist yet.
+          git checkout develop 2>/dev/null || git checkout -b develop origin/master
+          git merge origin/master --no-edit
+          git push origin develop
