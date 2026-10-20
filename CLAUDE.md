@@ -38,6 +38,18 @@ its own login.
    `Icon.Save()`: saving an icon built from an `HICON` drops the colour plane and
    writes only the 1-bit mask, producing a grey icon.
 
+5. **Keep the app's user-data move from merging profiles.** Since 2.42304 the
+   app moves userData out of the MSIX package to a fixed
+   `%LOCALAPPDATA%\Claude-Data\<pfn-lowercase>` on startup — the target ignores
+   `--user-data-dir`, so every profile would collapse into one folder/lock.
+   `Launch-Claude.ps1` writes `.user-data-back.<pfn-lowercase>` into the
+   profile's package copy (`%LOCALAPPDATA%\Packages\<pfn>\LocalCache\Roaming\<name>`)
+   before each launch, which the app's `index.pre.js` treats as "moved back"
+   → `stay_target_occupied` → profile used in place. That mapping only exists
+   for folders **directly under `%APPDATA%`**, so the launcher refuses other
+   locations. The default profile (`%APPDATA%\Claude` / `Claude-Data\*`) gets no
+   marker. Check `%LOCALAPPDATA%\<name>\logs\main.log` for `[user-data-move]`.
+
 ## Optional second isolation layer (`CLAUDE_CONFIG_DIR`)
 
 `--user-data-dir` isolates the **Claude Desktop login** only. The embedded
@@ -82,7 +94,7 @@ There is no automated test suite (it's OS/GUI integration). To verify by hand:
 
 ```powershell
 # 1) Resolve + launch an isolated instance:
-.\scripts\Launch-Claude.ps1 -ProfileDir "$env:TEMP\claude-test"
+.\scripts\Launch-Claude.ps1 -ProfileDir "$env:APPDATA\claude-test"
 
 # 2) Confirm it launched with the right flag:
 Get-CimInstance Win32_Process -Filter "Name='Claude.exe'" |
@@ -91,13 +103,14 @@ Get-CimInstance Win32_Process -Filter "Name='Claude.exe'" |
 ```
 
 A successful run shows `Claude.exe --user-data-dir=...\claude-test` and creates
-a populated `claude-test` folder (Local Storage, lockfile, etc.).
+a populated `claude-test` folder (Local Storage, lockfile, etc.). Profiles must
+be directly under `%APPDATA%` (see core mechanism #5), so don't test from `$env:TEMP`.
 
 To verify config isolation, add `-ConfigDir` and confirm the env var reaches the
 child process:
 
 ```powershell
-.\scripts\Launch-Claude.ps1 -ProfileDir "$env:TEMP\claude-test" -ConfigDir "$env:TEMP\claude-cfg-test"
+.\scripts\Launch-Claude.ps1 -ProfileDir "$env:APPDATA\claude-test" -ConfigDir "$env:TEMP\claude-cfg-test"
 # The launched process inherits CLAUDE_CONFIG_DIR=...\claude-cfg-test;
 # the directory is created if missing.
 ```

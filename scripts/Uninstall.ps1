@@ -37,9 +37,20 @@ foreach ($name in $Profile) {
         if ($name -ieq 'Work' -or $dataDir -ieq (Join-Path $env:APPDATA 'Claude')) {
             # %APPDATA%\Claude is the main login shared with the Start-menu app.
             Write-Host "Skipping data removal for '$name' (shared main login)." -ForegroundColor DarkYellow
-        } elseif (Test-Path $dataDir) {
-            Remove-Item $dataDir -Recurse -Force
-            Write-Host "Removed profile data: $dataDir" -ForegroundColor Yellow
+        } else {
+            if (Test-Path $dataDir) {
+                Remove-Item $dataDir -Recurse -Force
+                Write-Host "Removed profile data: $dataDir" -ForegroundColor Yellow
+            }
+            # MSIX package-cache copy of the profile (holds the user-data-back
+            # marker written by Launch-Claude.ps1, plus virtualized writes).
+            Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Packages') -Directory -Filter 'Claude_*' -ErrorAction SilentlyContinue |
+                ForEach-Object { Join-Path $_.FullName "LocalCache\Roaming\$name" } |
+                Where-Object { Test-Path $_ } |
+                ForEach-Object {
+                    Remove-Item $_ -Recurse -Force
+                    Write-Host "Removed package cache: $_" -ForegroundColor Yellow
+                }
         }
     }
 }

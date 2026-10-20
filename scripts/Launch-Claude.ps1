@@ -42,12 +42,14 @@ function Show-Error {
 
 # 1) Preferred: resolve via the Appx package (robust against version changes).
 $exe = $null
+$packageFamily = $null
 try {
     $pkg = Get-AppxPackage -Name '*Claude*' -ErrorAction Stop |
         Sort-Object Version -Descending | Select-Object -First 1
     if ($pkg) {
         $candidate = Join-Path $pkg.InstallLocation 'app\Claude.exe'
         if (Test-Path $candidate) { $exe = $candidate }
+        $packageFamily = $pkg.PackageFamilyName
     }
 } catch { }
 
@@ -62,8 +64,52 @@ if (-not $exe -or -not (Test-Path $exe)) {
     exit 1
 }
 
+# Package family = "<Name>_<PublisherHash>", e.g. Claude_pzs8sxrjxfjjc. Derive it
+# from the install folder (Claude_<version>_x64__<hash>) if the Appx query failed.
+if (-not $packageFamily -and $exe -match '\\(Claude)_[^\\]*__([a-z0-9]+)\\app\\') {
+    $packageFamily = "$($Matches[1])_$($Matches[2])"
+}
+
+$ProfileDir = [IO.Path]::GetFullPath($ProfileDir).TrimEnd('\')
+$appData = [IO.Path]::GetFullPath($env:APPDATA).TrimEnd('\')
+$defaultDir = Join-Path $appData 'Claude'
+$isDefault = $ProfileDir -ieq $defaultDir -or
+    $ProfileDir -like (Join-Path $env:LOCALAPPDATA 'Claude-Data\*')
+
+# Isolated profiles must sit directly under %APPDATA%: the app only honours
+# --user-data-dir there (see the user-data-move note below), and the Cowork VM
+# service resolves %APPDATA%\<name>\vm_bundles.
+if (-not $isDefault -and (Split-Path -Parent $ProfileDir) -ine $appData) {
+    Show-Error "Profile folder must be directly under %APPDATA% (e.g. $appData\Personal).`n`nGot: $ProfileDir`n`nRe-run Setup.ps1 to recreate the shortcut."
+    exit 1
+}
+
 # Ensure the isolated data directory exists.
 New-Item -ItemType Directory -Force -Path $ProfileDir | Out-Null
+
+# Keep the app from merging this profile into the shared default one.
+# Since 2.42304 the MSIX app moves its userData out of the package to
+# %LOCALAPPDATA%\Claude-Data\<packagefamily> on startup. That target is FIXED
+# per package -- it ignores --user-data-dir -- so once the default profile has
+# moved, every other --user-data-dir under %APPDATA% gets redirected into the
+# same folder (and same single-instance lock): all shortcuts open one account.
+# The app's own "moved back" marker in the profile's package-cache copy
+# (%LOCALAPPDATA%\Packages\<pfn>\LocalCache\Roaming\<name>) tells it to keep
+# using the profile in place, so set it before every launch (idempotent).
+if (-not $isDefault -and $packageFamily) {
+    $pfn = $packageFamily.ToLowerInvariant()
+    $packageCopy = Join-Path $env:LOCALAPPDATA "Packages\$packageFamily\LocalCache\Roaming\$(Split-Path -Leaf $ProfileDir)"
+    try {
+        New-Item -ItemType Directory -Force -Path $packageCopy | Out-Null
+        $back = Join-Path $packageCopy ".user-data-back.$pfn"
+        if (-not (Test-Path -LiteralPath $back)) { New-Item -ItemType File -Path $back | Out-Null }
+        foreach ($dir in $packageCopy, $ProfileDir) {
+            Remove-Item -LiteralPath (Join-Path $dir ".user-data-left.$pfn") -Force -ErrorAction SilentlyContinue
+        }
+    } catch {
+        Write-Warning "Could not write the user-data marker in ${packageCopy}: $_"
+    }
+}
 
 # Optionally isolate Claude Code / Cowork config + memory for this instance.
 # Start-Process inherits this process's environment, so the launched app (and
