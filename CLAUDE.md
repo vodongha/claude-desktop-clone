@@ -80,6 +80,13 @@ collapses into one button and can't be pinned on its own.
   app can redraw its tray icon and there's no way to read it back, so the
   watcher re-applies every 5 s. The icon handles belong to the watcher, which
   is one more reason it must live as long as the instance.
+- The tray icon isn't the app icon. `Setup.ps1` (`New-ProfileTrayIcon`) builds
+  `bin\claude-<name>-tray.ico` and `-tray-light.ico` from the app's own
+  `app\resources\Tray-Win32-Dark.ico` (white glyph, dark taskbar) and
+  `Tray-Win32.ico` (black glyph, light taskbar). Each size is drawn from the
+  app's matching frame, with a transparent gap cut around the badge. The watcher
+  picks one by `SystemUsesLightTheme` at every refresh. If the files are
+  missing, it falls back to the badged app icon.
 - Keep the loop cheap: it runs for hours. Check whether processes are alive with
   `IsAlive` (OpenProcess + wait), not `Get-Process`, which costs ~18 ms per call.
 - The instance is found by its main `Claude.exe` process (no `--type=`) under

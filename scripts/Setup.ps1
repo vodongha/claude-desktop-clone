@@ -105,6 +105,57 @@ function New-ProfileIcon {
     }
 }
 
+# Same idea for the notification-area icon: the app's own monochrome tray glyph
+# (Tray-Win32*.ico) with the badge cut into its corner. Each size is drawn from
+# the app's matching frame, so it stays crisp at 16 px.
+function New-ProfileTrayIcon {
+    param([string]$SourceIcoPath, [string]$IcoPath, [string]$Letter, [string]$Color)
+    $frames = @()
+    try {
+        foreach ($s in 16, 20, 24, 32, 40, 48, 64) {
+            $src = New-Object System.Drawing.Icon($SourceIcoPath, $s, $s)
+            $glyph = $src.ToBitmap(); $src.Dispose()
+            $bmp = New-Object System.Drawing.Bitmap $s, $s
+            $frames += $bmp
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.SmoothingMode = 'AntiAlias'
+            $g.InterpolationMode = 'HighQualityBicubic'
+            $g.DrawImage($glyph, 0, 0, $s, $s)
+            $glyph.Dispose()
+
+            # Clear a ring around the badge so it reads on any taskbar colour.
+            $d = [Math]::Round($s * 0.6); $x = $s - $d
+            $gap = [Math]::Max(1, [Math]::Round($s * 0.07))
+            $g.CompositingMode = 'SourceCopy'
+            $clear = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::Transparent)
+            $g.FillEllipse($clear, $x - $gap, $x - $gap, $d + 2 * $gap, $d + 2 * $gap)
+            $clear.Dispose()
+            $g.CompositingMode = 'SourceOver'
+            $brush = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml($Color))
+            $g.FillEllipse($brush, $x, $x, $d, $d)
+            $brush.Dispose()
+
+            # Centre the letter by its outline, not its font box, so it sits
+            # in the middle of the circle even at a few pixels tall.
+            $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+            $path.AddString($Letter, (New-Object System.Drawing.FontFamily 'Segoe UI'), [int][System.Drawing.FontStyle]::Bold,
+                [float]($d * 0.8), (New-Object System.Drawing.PointF 0, 0), [System.Drawing.StringFormat]::GenericTypographic)
+            $r = $path.GetBounds()
+            $m = New-Object System.Drawing.Drawing2D.Matrix
+            $m.Translate(($x + ($d - $r.Width) / 2 - $r.X), ($x + ($d - $r.Height) / 2 - $r.Y))
+            $path.Transform($m)
+            $g.FillPath([System.Drawing.Brushes]::White, $path)
+            $path.Dispose(); $m.Dispose(); $g.Dispose()
+        }
+        Write-IcoFromBitmap -Bmp $frames -Path $IcoPath
+        return $true
+    } catch {
+        return $false
+    } finally {
+        foreach ($f in $frames) { $f.Dispose() }
+    }
+}
+
 # Extracts the highest-resolution icon out of an .exe into a standalone .ico.
 # This is what makes shortcut icons survive app updates: the Claude .exe lives
 # under C:\Program Files\WindowsApps\Claude_<version>__...\app\Claude.exe, and
@@ -128,28 +179,35 @@ public static extern bool DestroyIcon(IntPtr hIcon);
     # Bitmap. We deliberately do NOT use Icon.Save(): saving an Icon created from
     # an HICON drops the colour plane and writes only the 1-bit AND mask, which is
     # why the icon came out grey. Rendering to a Bitmap and packing the PNG
-    # ourselves preserves colour and alpha. Script-scoped so New-ProfileIcon can
-    # reuse it.
+    # ourselves preserves colour and alpha. Takes one bitmap per size (one frame
+    # each). Script-scoped so the profile icon functions can reuse it.
     function script:Write-IcoFromBitmap {
-        param([System.Drawing.Bitmap]$Bmp, [string]$Path)
-        $ms = New-Object System.IO.MemoryStream
-        $Bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
-        $png = $ms.ToArray(); $ms.Dispose()
+        param([System.Drawing.Bitmap[]]$Bmp, [string]$Path)
+        $pngs = New-Object 'System.Collections.Generic.List[byte[]]'
+        foreach ($b in $Bmp) {
+            $ms = New-Object System.IO.MemoryStream
+            $b.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+            $pngs.Add($ms.ToArray()); $ms.Dispose()
+        }
         $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Create)
         $bw = New-Object System.IO.BinaryWriter($fs)
         $bw.Write([uint16]0)            # reserved
         $bw.Write([uint16]1)            # type = icon
-        $bw.Write([uint16]1)            # image count
-        $dim = if ($Bmp.Width -ge 256) { 0 } else { [byte]$Bmp.Width }   # 0 means 256
-        $bw.Write([byte]$dim)           # width
-        $bw.Write([byte]$dim)           # height
-        $bw.Write([byte]0)              # palette count
-        $bw.Write([byte]0)              # reserved
-        $bw.Write([uint16]1)            # colour planes
-        $bw.Write([uint16]32)           # bits per pixel
-        $bw.Write([uint32]$png.Length)  # image size
-        $bw.Write([uint32]22)           # offset = 6 (dir) + 16 (entry)
-        $bw.Write($png)
+        $bw.Write([uint16]$Bmp.Count)   # image count
+        $offset = 6 + 16 * $Bmp.Count   # directory, then the PNGs back to back
+        for ($i = 0; $i -lt $Bmp.Count; $i++) {
+            $dim = if ($Bmp[$i].Width -ge 256) { 0 } else { [byte]$Bmp[$i].Width }   # 0 means 256
+            $bw.Write([byte]$dim)           # width
+            $bw.Write([byte]$dim)           # height
+            $bw.Write([byte]0)              # palette count
+            $bw.Write([byte]0)              # reserved
+            $bw.Write([uint16]1)            # colour planes
+            $bw.Write([uint16]32)           # bits per pixel
+            $bw.Write([uint32]$pngs[$i].Length)  # image size
+            $bw.Write([uint32]$offset)      # image offset
+            $offset += $pngs[$i].Length
+        }
+        foreach ($png in $pngs) { $bw.Write($png) }
         $bw.Flush(); $bw.Close()
     }
 
@@ -253,8 +311,18 @@ foreach ($name in $Profile) {
         $badgePath = Join-Path $binDir "claude-$(Split-Path $dataDir -Leaf).ico"
         $color = $badgeColors[$badgeIndex % $badgeColors.Count]
         $badgeIndex++
-        if (New-ProfileIcon -BaseIcoPath $icoPath -IcoPath $badgePath -Letter $name.Substring(0, 1).ToUpper() -Color $color) {
+        $letter = $name.Substring(0, 1).ToUpper()
+        if (New-ProfileIcon -BaseIcoPath $icoPath -IcoPath $badgePath -Letter $letter -Color $color) {
             $profileIcon = "$badgePath,0"
+        }
+        # Tray versions for dark and light taskbars, drawn from the app's own
+        # tray glyphs; Launch-Claude.ps1 falls back to the badge icon without them.
+        $trayBase = [IO.Path]::ChangeExtension($badgePath, $null)
+        foreach ($variant in @(@('Tray-Win32-Dark.ico', "$trayBase-tray.ico"), @('Tray-Win32.ico', "$trayBase-tray-light.ico"))) {
+            $glyph = Join-Path $pkg.InstallLocation "app\resources\$($variant[0])"
+            if (Test-Path $glyph) {
+                [void](New-ProfileTrayIcon -SourceIcoPath $glyph -IcoPath $variant[1] -Letter $letter -Color $color)
+            }
         }
     }
     if (-not $appId) { $appId = $packageAppId }

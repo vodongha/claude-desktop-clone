@@ -118,7 +118,8 @@ wscript.exe launch.vbs "<profile-data-dir>" "<claude-config-dir>"
     ├── launch.vbs            # runs the .ps1 hidden (no console flash)
     ├── TaskbarId.ps1         # per-profile taskbar identity (separate pins)
     ├── claude.ico            # icon extracted to a STABLE path (survives updates)
-    └── claude-Personal.ico   # same icon with a profile badge (one per isolated profile)
+    ├── claude-Personal.ico   # same icon with a profile badge (one per isolated profile)
+    └── claude-Personal-tray*.ico  # the app's tray glyph with the badge (dark + light taskbar)
 
 %APPDATA%\                     # profile DATA lives here (required for Cowork VM)
 ├── Personal\                 # isolated Chromium profile (login, history, cache, VM)
@@ -163,9 +164,11 @@ give each profile its own button that you can pin, the setup does two things:
   coloured badge showing the profile's initial (`-NoProfileBadge` turns this off).
   The default-login profile keeps the app's own ID, so it matches the regular
   Claude pin.
-- `Launch-Claude.ps1` puts the same ID on the instance's windows. It also swaps in
-  the badged icon for the window (title bar, Alt+Tab) and the tray icon, and sets
-  the tray tooltip to `Claude (<name>)`, so you can tell which tray icon to quit.
+- `Launch-Claude.ps1` puts the same ID on the instance's windows. It also gives the
+  window (title bar, Alt+Tab) the badged icon. In the tray it shows the app's own
+  monochrome tray glyph with the badge cut into its corner, matching the taskbar
+  theme, and sets the tooltip to `Claude (<name>)`, so you can tell which tray
+  icon to quit.
   Because the app can open new windows (or redraw its tray icon) at any time, the
   hidden launcher stays running while that profile is open and exits with it.
   Launching the profile again while it runs doesn't start a second watcher.

@@ -261,14 +261,19 @@ function Get-ClaudeInstancePids {
 # Keeps tagging the instance's windows with $AppId for as long as it runs,
 # since the app can create new windows at any time. With $IconFile it also
 # swaps the windows' own icon and the tray icon + tooltip, so the profile can
-# be told apart in Alt+Tab and the notification area. One watcher per profile.
+# be told apart in Alt+Tab and the notification area. The tray uses
+# $TrayIconFile / $TrayIconLightFile (badged copies of the app's monochrome
+# tray glyph for dark / light taskbars) when given, else $IconFile.
+# One watcher per profile.
 function Watch-ClaudeWindows {
     param(
         [string]$ProfileDir,
         [string]$AppId,
         [string]$RelaunchCommand,
         [string]$DisplayName,
-        [string]$IconFile
+        [string]$IconFile,
+        [string]$TrayIconFile,
+        [string]$TrayIconLightFile
     )
     $created = $false
     $mutex = New-Object System.Threading.Mutex($true, "Local\$AppId.TaskbarWatcher", [ref]$created)
@@ -281,6 +286,15 @@ function Watch-ClaudeWindows {
         $smallIcon = [ClaudeProfiles.Taskbar]::LoadIcon($IconFile, $false)
         $bigIcon = [ClaudeProfiles.Taskbar]::LoadIcon($IconFile, $true)
     }
+    $trayDark = $smallIcon; $trayLight = $smallIcon
+    if ($TrayIconFile -and (Test-Path $TrayIconFile)) {
+        $trayDark = [ClaudeProfiles.Taskbar]::LoadIcon($TrayIconFile, $false)
+        $trayLight = $trayDark
+    }
+    if ($TrayIconLightFile -and (Test-Path $TrayIconLightFile)) {
+        $trayLight = [ClaudeProfiles.Taskbar]::LoadIcon($TrayIconLightFile, $false)
+    }
+    $themeKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
 
     $pids = @()
     $started = Get-Date
@@ -299,6 +313,11 @@ function Watch-ClaudeWindows {
                 # The app may redraw its tray icon at any time and there is no
                 # way to read it back, so re-apply ours every few seconds.
                 $refreshTray = ((Get-Date) - $trayDone).TotalSeconds -ge 5
+                if ($refreshTray) {
+                    # Follow the taskbar theme, like the app's own tray icon does.
+                    $light = (Get-ItemProperty $themeKey -ErrorAction SilentlyContinue).SystemUsesLightTheme -eq 1
+                    $trayIcon = if ($light) { $trayLight } else { $trayDark }
+                }
                 foreach ($h in [ClaudeProfiles.Taskbar]::WindowsOf([int[]]$pids)) {
                     try {
                         if ([ClaudeProfiles.Taskbar]::GetWindowId($h) -ne $AppId) {
@@ -309,7 +328,7 @@ function Watch-ClaudeWindows {
                             if ($class -eq 'Chrome_WidgetWin_1') {
                                 [ClaudeProfiles.Taskbar]::SetWindowIcon($h, $smallIcon, $bigIcon)
                             } elseif ($class -eq 'Electron_NotifyIconHostWindow' -and $refreshTray) {
-                                [void][ClaudeProfiles.Taskbar]::SetTrayIcon($h, $smallIcon, $DisplayName)
+                                [void][ClaudeProfiles.Taskbar]::SetTrayIcon($h, $trayIcon, $DisplayName)
                             }
                         }
                     } catch { }
