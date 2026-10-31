@@ -34,6 +34,11 @@
     directory (CLAUDE_CONFIG_DIR). Use this to give a profile its own isolated
     memory + settings store, separate from any other account.
 
+.PARAMETER NoProfileBadge
+    Keep the plain Claude icon on isolated profiles' shortcuts. By default each
+    one gets the Claude icon with a coloured badge showing the profile's initial,
+    so separately pinned taskbar buttons are easy to tell apart.
+
 .EXAMPLE
     .\Setup.ps1
     # Creates "Claude (Work)" and "Claude (Personal)" on the Desktop.
@@ -50,11 +55,55 @@ param(
     [string[]]$Profile = @('Work', 'Personal'),
     [string]$InstallDir = (Join-Path $env:USERPROFILE 'ClaudeProfiles'),
     [switch]$ReuseDefaultForWork,
-    [hashtable]$ConfigDir = @{}
+    [hashtable]$ConfigDir = @{},
+    [switch]$NoProfileBadge
 )
 
 $ErrorActionPreference = 'Stop'
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $scriptRoot 'TaskbarId.ps1')
+
+# Draws the profile's initial in a coloured badge on top of the Claude icon, so
+# separately pinned profiles can be told apart on the taskbar.
+function New-ProfileIcon {
+    param([string]$BaseIcoPath, [string]$IcoPath, [string]$Letter, [string]$Color)
+    $base = $null; $bmp = $null; $g = $null
+    try {
+        # The base .ico is the single PNG frame Export-AppIcon wrote; read the
+        # PNG directly (System.Drawing.Icon can't always decode PNG frames).
+        $bytes = [System.IO.File]::ReadAllBytes($BaseIcoPath)
+        $size = [BitConverter]::ToInt32($bytes, 14)
+        $offset = [BitConverter]::ToInt32($bytes, 18)
+        $base = [System.Drawing.Image]::FromStream((New-Object System.IO.MemoryStream(, $bytes[$offset..($offset + $size - 1)])))
+        $bmp = New-Object System.Drawing.Bitmap 256, 256
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        $g.SmoothingMode = 'AntiAlias'
+        $g.InterpolationMode = 'HighQualityBicubic'
+        $g.TextRenderingHint = 'AntiAliasGridFit'
+        $g.DrawImage($base, 0, 0, 256, 256)
+
+        # Bottom-right badge with a white ring so it reads on the orange icon.
+        $d = 143; $x = 256 - $d; $ring = 10
+        $g.FillEllipse([System.Drawing.Brushes]::White, $x, $x, $d, $d)
+        $brush = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml($Color))
+        $g.FillEllipse($brush, $x + $ring, $x + $ring, $d - 2 * $ring, $d - 2 * $ring)
+        $brush.Dispose()
+        $font = New-Object System.Drawing.Font 'Segoe UI', 74, ([System.Drawing.FontStyle]::Bold), ([System.Drawing.GraphicsUnit]::Pixel)
+        $fmt = New-Object System.Drawing.StringFormat
+        $fmt.Alignment = 'Center'; $fmt.LineAlignment = 'Center'
+        $g.DrawString($Letter, $font, [System.Drawing.Brushes]::White, (New-Object System.Drawing.RectangleF $x, ($x + 4), $d, $d), $fmt)
+        $font.Dispose()
+
+        Write-IcoFromBitmap -Bmp $bmp -Path $IcoPath
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($g) { $g.Dispose() }
+        if ($bmp) { $bmp.Dispose() }
+        if ($base) { $base.Dispose() }
+    }
+}
 
 # Extracts the highest-resolution icon out of an .exe into a standalone .ico.
 # This is what makes shortcut icons survive app updates: the Claude .exe lives
@@ -79,8 +128,9 @@ public static extern bool DestroyIcon(IntPtr hIcon);
     # Bitmap. We deliberately do NOT use Icon.Save(): saving an Icon created from
     # an HICON drops the colour plane and writes only the 1-bit AND mask, which is
     # why the icon came out grey. Rendering to a Bitmap and packing the PNG
-    # ourselves preserves colour and alpha.
-    function Write-IcoFromBitmap {
+    # ourselves preserves colour and alpha. Script-scoped so New-ProfileIcon can
+    # reuse it.
+    function script:Write-IcoFromBitmap {
         param([System.Drawing.Bitmap]$Bmp, [string]$Path)
         $ms = New-Object System.IO.MemoryStream
         $Bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
@@ -142,6 +192,7 @@ $binDir = Join-Path $InstallDir 'bin'
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 Copy-Item (Join-Path $scriptRoot 'Launch-Claude.ps1') $binDir -Force
 Copy-Item (Join-Path $scriptRoot 'launch.vbs') $binDir -Force
+Copy-Item (Join-Path $scriptRoot 'TaskbarId.ps1') $binDir -Force
 $vbs = Join-Path $binDir 'launch.vbs'
 
 # --- Extract the Claude icon to a STABLE path (survives app updates) -------
@@ -160,6 +211,9 @@ if (Export-AppIcon -ExePath $iconExe -IcoPath $icoPath) {
 # --- Create a profile + desktop shortcut for each name --------------------
 $desktop = [Environment]::GetFolderPath('Desktop')
 $wsh = New-Object -ComObject WScript.Shell
+$packageAppId = Get-ClaudePackageAppId -Package $pkg
+$badgeColors = '#2AABEE', '#34A853', '#8E44AD', '#E53935', '#F9A825', '#00897B'
+$badgeIndex = 0
 
 foreach ($name in $Profile) {
     if ($ReuseDefaultForWork -and $name -ieq 'Work') {
@@ -191,13 +245,35 @@ foreach ($name in $Profile) {
     } else {
         $sc.Arguments = '"{0}" "{1}"' -f $vbs, $dataDir
     }
-    $sc.IconLocation = $iconLocation
+    # Isolated profiles get their own taskbar identity (see TaskbarId.ps1) and,
+    # unless -NoProfileBadge, an icon with their initial so the pins differ.
+    $appId = Get-ClaudeProfileAppId -ProfileDir $dataDir
+    $profileIcon = $iconLocation
+    if ($appId -and -not $NoProfileBadge -and (Test-Path $icoPath)) {
+        $badgePath = Join-Path $binDir "claude-$(Split-Path $dataDir -Leaf).ico"
+        $color = $badgeColors[$badgeIndex % $badgeColors.Count]
+        $badgeIndex++
+        if (New-ProfileIcon -BaseIcoPath $icoPath -IcoPath $badgePath -Letter $name.Substring(0, 1).ToUpper() -Color $color) {
+            $profileIcon = "$badgePath,0"
+        }
+    }
+    if (-not $appId) { $appId = $packageAppId }
+
+    $sc.IconLocation = $profileIcon
     $sc.Description = "Claude Desktop - $name profile"
     $sc.WorkingDirectory = $binDir
     $sc.Save()
+    if ($appId) {
+        try {
+            [ClaudeProfiles.Taskbar]::SetShortcutId($lnkPath, $appId)
+        } catch {
+            Write-Warning "Could not set the taskbar ID on ${lnkPath}: $_"
+        }
+    }
     Write-Host "  -> created shortcut: $lnkPath" -ForegroundColor Cyan
 }
 
 Write-Host ""
 Write-Host "Done. Open each shortcut and sign in to the matching account." -ForegroundColor Green
 Write-Host "Tip: clicking a shortcut again just focuses that profile's window (single instance per profile)."
+Write-Host "Tip: right-click a shortcut > Pin to taskbar to give each profile its own taskbar button."

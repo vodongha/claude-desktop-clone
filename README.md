@@ -116,7 +116,9 @@ wscript.exe launch.vbs "<profile-data-dir>" "<claude-config-dir>"
 └── bin\
     ├── Launch-Claude.ps1     # resolves the MSIX exe, launches with --user-data-dir
     ├── launch.vbs            # runs the .ps1 hidden (no console flash)
-    └── claude.ico            # icon extracted to a STABLE path (survives updates)
+    ├── TaskbarId.ps1         # per-profile taskbar identity (separate pins)
+    ├── claude.ico            # icon extracted to a STABLE path (survives updates)
+    └── claude-Personal.ico   # same icon with a profile badge (one per isolated profile)
 
 %APPDATA%\                     # profile DATA lives here (required for Cowork VM)
 ├── Personal\                 # isolated Chromium profile (login, history, cache, VM)
@@ -149,6 +151,27 @@ repo afterwards and everything keeps working. Profile *data* lives under
 - **Switching the "main" app:** the regular Start-menu Claude icon still uses
   `%APPDATA%\Claude`, i.e. the same login as a "Work" profile created with
   `-ReuseDefaultForWork`.
+
+### Separate taskbar buttons (pin each profile)
+
+Windows groups taskbar buttons by *AppUserModelID*, and every Claude instance
+shares the app's own ID, so all profiles normally collapse into one button. To
+give each profile its own button that you can pin, the setup does two things:
+
+- `Setup.ps1` writes a per-profile ID (`ClaudeProfiles.<name>`) onto each
+  isolated profile's shortcut. It also gives that shortcut the Claude icon with a
+  coloured badge showing the profile's initial (`-NoProfileBadge` turns this off).
+  The default-login profile keeps the app's own ID, so it matches the regular
+  Claude pin.
+- `Launch-Claude.ps1` puts the same ID on the instance's windows. Because the app
+  can open new windows at any time, the hidden launcher stays running while that
+  profile is open and exits with it. Launching the profile again while it runs
+  doesn't start a second watcher.
+
+To pin a profile, right-click its desktop shortcut and choose **Pin to taskbar**.
+Clicking the pin starts that profile, or switches to it if it's already open.
+A profile started some other way (not through its shortcut or pin) groups with
+the regular Claude button again.
 
 ---
 
@@ -251,6 +274,7 @@ powershell -ExecutionPolicy Bypass -File scripts\Setup.ps1 -ReuseDefaultForWork
 - `-ReuseDefaultForWork`: icon Work dùng lại tài khoản đang đăng nhập (khỏi
   login lại). Icon Personal mở cửa sổ mới để đăng nhập tài khoản còn lại.
 - Bấm lại icon → focus đúng cửa sổ của tài khoản đó (không mở trùng).
+- Mỗi profile có nút riêng trên taskbar: chuột phải vào icon → **Pin to taskbar**.
 
 Muốn tách riêng cả **bộ nhớ Claude Code / Cowork** cho từng profile (mặc định
 chỉ tách login, còn `~/.claude` thì dùng chung), trỏ `CLAUDE_CONFIG_DIR` qua

@@ -54,13 +54,38 @@ profile can point `CLAUDE_CONFIG_DIR` at a dedicated directory:
 This is **additive and optional** — omitting it keeps the shared `~/.claude`
 store, which is the default. Don't make it mandatory or hard-code a path.
 
+## Per-profile taskbar identity (`TaskbarId.ps1`)
+
+The taskbar groups buttons by AppUserModelID (AUMID). All instances share the
+package AUMID (`<PackageFamilyName>!Claude`), so without help every profile
+collapses into one button and can't be pinned on its own.
+
+- Isolated profiles get the AUMID `ClaudeProfiles.<data folder name>` (see
+  `Get-ClaudeProfileAppId`). The default `%APPDATA%\Claude` profile keeps the
+  package AUMID, so it stays merged with the regular Claude pin.
+- `Setup.ps1` writes that AUMID onto the shortcut (`System.AppUserModel.ID` via
+  the `.lnk`'s `IPropertyStore`). It also writes a badged icon,
+  `bin\claude-<name>.ico`, unless `-NoProfileBadge` is set.
+- `Launch-Claude.ps1` then calls `Watch-ClaudeWindows`, which sets the same
+  AUMID (plus `RelaunchCommand` / `RelaunchDisplayNameResource` /
+  `RelaunchIconResource`, set *before* the ID) on every top-level window of
+  the instance via `SHGetPropertyStoreForWindow`. The app can create windows at
+  any time, so the launcher stays alive, hidden, until the instance exits. A
+  named mutex keeps it to one watcher per profile.
+- The instance is found by its main `Claude.exe` process (no `--type=`) under
+  `WindowsApps\Claude_*\app\`, whose `--user-data-dir` matches the profile.
+  Claude Code's CLI is also called `claude.exe`, so always filter on the path.
+- All of this is additive. If `TaskbarId.ps1` is missing next to the launcher,
+  the launcher behaves exactly as before.
+
 ## Layout
 
 ```
 scripts/
   Launch-Claude.ps1   # resolve exe + Start-Process with --user-data-dir; optional -ConfigDir sets CLAUDE_CONFIG_DIR
   launch.vbs          # run the .ps1 hidden (no console window); finds the .ps1 next to itself; optional 2nd arg = config dir
-  Setup.ps1           # installer: copies scripts to %USERPROFILE%\ClaudeProfiles\bin, extracts a stable bin\claude.ico, makes profiles + desktop shortcuts; -ConfigDir hashtable maps a profile to its own memory store
+  TaskbarId.ps1       # dot-sourced helper: per-profile AUMID on shortcuts + windows (separate taskbar pins)
+  Setup.ps1           # installer: copies scripts to %USERPROFILE%\ClaudeProfiles\bin, extracts a stable bin\claude.ico, makes profiles + desktop shortcuts (with per-profile AUMID + badge icon); -ConfigDir hashtable maps a profile to its own memory store
   Uninstall.ps1       # removes shortcuts (and optionally profile data)
   Build-Exe.ps1       # optional: wrap Launch-Claude.ps1 into an .exe via ps2exe
 ```
