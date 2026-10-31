@@ -1,0 +1,344 @@
+<#
+.SYNOPSIS
+    Helpers that give each Claude profile its own taskbar button and pin.
+
+.DESCRIPTION
+    Windows groups taskbar buttons by AppUserModelID (AUMID). Every Claude
+    instance carries the package's AUMID, so all profiles collapse into one
+    button and cannot be pinned separately. Writing a per-profile AUMID onto
+    both the profile's shortcut and the instance's windows makes the taskbar
+    treat each profile as its own app.
+
+    Dot-source this file; it defines the ClaudeProfiles.Taskbar type and the
+    functions below. Used by Setup.ps1 (shortcut IDs) and Launch-Claude.ps1
+    (window IDs).
+#>
+
+if (-not ('ClaudeProfiles.Taskbar' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+namespace ClaudeProfiles {
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
+    public struct PropertyKey {
+        public Guid fmtid;
+        public uint pid;
+        public PropertyKey(Guid f, uint p) { fmtid = f; pid = p; }
+    }
+
+    // Only the string (VT_LPWSTR) case is needed here.
+    [StructLayout(LayoutKind.Sequential)]
+    public struct PropVariant {
+        public ushort vt;
+        public ushort r1, r2, r3;
+        public IntPtr p;
+        public IntPtr p2;
+    }
+
+    [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IPropertyStore {
+        [PreserveSig] int GetCount(out uint c);
+        [PreserveSig] int GetAt(uint i, out PropertyKey k);
+        [PreserveSig] int GetValue(ref PropertyKey k, out PropVariant v);
+        [PreserveSig] int SetValue(ref PropertyKey k, ref PropVariant v);
+        [PreserveSig] int Commit();
+    }
+
+    [ComImport, Guid("0000010b-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IPersistFile {
+        [PreserveSig] int GetClassID(out Guid c);
+        [PreserveSig] int IsDirty();
+        [PreserveSig] int Load([MarshalAs(UnmanagedType.LPWStr)] string f, uint mode);
+        [PreserveSig] int Save([MarshalAs(UnmanagedType.LPWStr)] string f, bool remember);
+        [PreserveSig] int SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string f);
+        [PreserveSig] int GetCurFile([MarshalAs(UnmanagedType.LPWStr)] out string f);
+    }
+
+    [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+    class ShellLink { }
+
+    public static class Taskbar {
+        static readonly Guid AppModel = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");
+        static PropertyKey Id = new PropertyKey(AppModel, 5);
+        static PropertyKey RelaunchCommand = new PropertyKey(AppModel, 2);
+        static PropertyKey RelaunchIcon = new PropertyKey(AppModel, 3);
+        static PropertyKey RelaunchName = new PropertyKey(AppModel, 4);
+
+        delegate bool EnumProc(IntPtr h, IntPtr l);
+        [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+        [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+        [DllImport("shell32.dll")] static extern int SHGetPropertyStoreForWindow(IntPtr h, ref Guid riid, out IPropertyStore ps);
+        [DllImport("ole32.dll")] static extern int PropVariantClear(ref PropVariant v);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int n);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr LoadImage(IntPtr h, string name, uint type, int cx, int cy, uint flags);
+        [DllImport("user32.dll")] static extern int GetSystemMetrics(int i);
+        [DllImport("user32.dll")] static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
+        [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+        [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr h, uint ms);
+        [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+
+        // Much cheaper than Get-Process, which snapshots every process.
+        public static bool IsAlive(int pid) {
+            IntPtr h = OpenProcess(0x00100000, false, pid); // SYNCHRONIZE
+            if (h == IntPtr.Zero) return false;
+            try { return WaitForSingleObject(h, 0) == 0x102; } // WAIT_TIMEOUT = still running
+            finally { CloseHandle(h); }
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct NotifyIconData {
+            public int cbSize; public IntPtr hWnd; public uint uID; public uint uFlags;
+            public uint uCallbackMessage; public IntPtr hIcon;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string szTip;
+            public uint dwState; public uint dwStateMask;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string szInfo;
+            public uint uVersion;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string szInfoTitle;
+            public uint dwInfoFlags; public Guid guidItem; public IntPtr hBalloonIcon;
+        }
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern bool Shell_NotifyIconW(uint msg, ref NotifyIconData d);
+
+        static PropVariant Str(string s) {
+            var v = new PropVariant();
+            v.vt = 31; // VT_LPWSTR
+            v.p = Marshal.StringToCoTaskMemUni(s);
+            return v;
+        }
+
+        static string Get(IPropertyStore ps, PropertyKey k) {
+            PropVariant v;
+            if (ps.GetValue(ref k, out v) != 0) return null;
+            string s = v.vt == 31 ? Marshal.PtrToStringUni(v.p) : null;
+            PropVariantClear(ref v);
+            return s;
+        }
+
+        static void Set(IPropertyStore ps, PropertyKey k, string s) {
+            var v = Str(s);
+            try { Marshal.ThrowExceptionForHR(ps.SetValue(ref k, ref v)); }
+            finally { PropVariantClear(ref v); }
+        }
+
+        static IPropertyStore WindowStore(IntPtr h) {
+            Guid iid = typeof(IPropertyStore).GUID;
+            IPropertyStore ps;
+            Marshal.ThrowExceptionForHR(SHGetPropertyStoreForWindow(h, ref iid, out ps));
+            return ps;
+        }
+
+        public static IntPtr[] WindowsOf(int[] pids) {
+            var set = new HashSet<uint>();
+            foreach (var p in pids) set.Add((uint)p);
+            var found = new List<IntPtr>();
+            EnumWindows((h, l) => {
+                uint pid;
+                GetWindowThreadProcessId(h, out pid);
+                if (set.Contains(pid)) found.Add(h);
+                return true;
+            }, IntPtr.Zero);
+            return found.ToArray();
+        }
+
+        public static string GetWindowId(IntPtr h) {
+            var ps = WindowStore(h);
+            try { return Get(ps, Id); } finally { Marshal.ReleaseComObject(ps); }
+        }
+
+        // Relaunch properties go first: the taskbar reads them when the ID
+        // changes, so "Pin to taskbar" on the running window keeps our launcher.
+        public static void SetWindowId(IntPtr h, string id, string command, string name, string icon) {
+            var ps = WindowStore(h);
+            try {
+                if (!string.IsNullOrEmpty(command)) {
+                    Set(ps, RelaunchCommand, command);
+                    Set(ps, RelaunchName, name);
+                    if (!string.IsNullOrEmpty(icon)) Set(ps, RelaunchIcon, icon);
+                }
+                Set(ps, Id, id);
+            } finally { Marshal.ReleaseComObject(ps); }
+        }
+
+        public static string GetClass(IntPtr h) {
+            var s = new System.Text.StringBuilder(256);
+            GetClassName(h, s, s.Capacity);
+            return s.ToString();
+        }
+
+        // Loads an .ico at the system's small (big = false) or large icon size.
+        // The handle must stay alive while windows use it, so callers keep it.
+        public static IntPtr LoadIcon(string path, bool big) {
+            int s = GetSystemMetrics(big ? 11 : 49); // SM_CXICON : SM_CXSMICON
+            return LoadImage(IntPtr.Zero, path, 1, s, s, 0x10); // IMAGE_ICON, LR_LOADFROMFILE
+        }
+
+        // Swaps the window's own icon (title bar, Alt+Tab) if it isn't ours yet.
+        public static void SetWindowIcon(IntPtr h, IntPtr small, IntPtr big) {
+            IntPtr cur;
+            const uint WM_GETICON = 0x7F, WM_SETICON = 0x80, SMTO_ABORTIFHUNG = 2;
+            SendMessageTimeout(h, WM_GETICON, (IntPtr)1, IntPtr.Zero, SMTO_ABORTIFHUNG, 500, out cur);
+            if (cur == big) return;
+            SendMessageTimeout(h, WM_SETICON, (IntPtr)0, small, SMTO_ABORTIFHUNG, 500, out cur);
+            SendMessageTimeout(h, WM_SETICON, (IntPtr)1, big, SMTO_ABORTIFHUNG, 500, out cur);
+        }
+
+        // Replaces the icon and tooltip of the tray icon(s) owned by host
+        // (Electron's notify-icon window). The icon ID isn't known, so try the
+        // small range Electron hands out; returns how many were updated.
+        public static int SetTrayIcon(IntPtr host, IntPtr icon, string tip) {
+            int n = 0;
+            for (uint id = 0; id < 32; id++) {
+                var d = new NotifyIconData();
+                d.cbSize = Marshal.SizeOf(typeof(NotifyIconData));
+                d.hWnd = host; d.uID = id;
+                d.uFlags = 0x2 | 0x4 | 0x80; // NIF_ICON | NIF_TIP | NIF_SHOWTIP
+                d.hIcon = icon; d.szTip = tip;
+                if (Shell_NotifyIconW(1, ref d)) n++; // NIM_MODIFY
+            }
+            return n;
+        }
+
+        public static string GetShortcutId(string lnk) {
+            var link = new ShellLink();
+            try {
+                Marshal.ThrowExceptionForHR(((IPersistFile)link).Load(lnk, 0));
+                return Get((IPropertyStore)link, Id);
+            } finally { Marshal.ReleaseComObject(link); }
+        }
+
+        public static void SetShortcutId(string lnk, string id) {
+            var link = new ShellLink();
+            try {
+                var file = (IPersistFile)link;
+                Marshal.ThrowExceptionForHR(file.Load(lnk, 2)); // STGM_READWRITE
+                var ps = (IPropertyStore)link;
+                Set(ps, Id, id);
+                Marshal.ThrowExceptionForHR(ps.Commit());
+                Marshal.ThrowExceptionForHR(file.Save(lnk, true));
+            } finally { Marshal.ReleaseComObject(link); }
+        }
+    }
+}
+'@
+}
+
+# The default data folder keeps the app's own identity (and any existing
+# Claude pin); every other profile gets "ClaudeProfiles.<folder name>".
+function Get-ClaudeProfileAppId {
+    param([string]$ProfileDir)
+    $dir = $ProfileDir.TrimEnd('\')
+    if ($dir -ieq (Join-Path $env:APPDATA 'Claude')) { return $null }
+    'ClaudeProfiles.' + ((Split-Path $dir -Leaf) -replace '[^A-Za-z0-9]', '')
+}
+
+# The AUMID the installed app itself uses, e.g. "Claude_pzs8sxrjxfjjc!Claude".
+function Get-ClaudePackageAppId {
+    param($Package)
+    $manifest = $Package | Get-AppxPackageManifest -ErrorAction SilentlyContinue
+    $apps = @($manifest.Package.Applications.Application)
+    $app = $apps | Where-Object { $_.Id -eq 'Claude' } | Select-Object -First 1
+    if (-not $app) { $app = $apps | Select-Object -First 1 }
+    if ($app) { "$($Package.PackageFamilyName)!$($app.Id)" }
+}
+
+# Main (browser) processes of the Claude instance started with $ProfileDir.
+function Get-ClaudeInstancePids {
+    param([string]$ProfileDir)
+    $dir = $ProfileDir.TrimEnd('\')
+    Get-CimInstance Win32_Process -Filter "Name='Claude.exe'" -ErrorAction SilentlyContinue |
+        Where-Object {
+            # Only the desktop app; Claude Code's CLI is also named claude.exe.
+            if ($_.ExecutablePath -notmatch '\\WindowsApps\\Claude_[^\\]+\\app\\Claude\.exe$') { return $false }
+            $cl = $_.CommandLine
+            if (-not $cl -or $cl -match '--type=') { return $false }
+            $cl -match '--user-data-dir=(?:"([^"]+)"|(\S+))' -and
+                ($Matches[1] + $Matches[2]).TrimEnd('\') -ieq $dir
+        } |
+        ForEach-Object { [int]$_.ProcessId }
+}
+
+# Keeps tagging the instance's windows with $AppId for as long as it runs,
+# since the app can create new windows at any time. With $IconFile it also
+# swaps the windows' own icon and the tray icon + tooltip, so the profile can
+# be told apart in Alt+Tab and the notification area. The tray uses
+# $TrayIconFile / $TrayIconLightFile (badged copies of the app's monochrome
+# tray glyph for dark / light taskbars) when given, else $IconFile.
+# One watcher per profile.
+function Watch-ClaudeWindows {
+    param(
+        [string]$ProfileDir,
+        [string]$AppId,
+        [string]$RelaunchCommand,
+        [string]$DisplayName,
+        [string]$IconFile,
+        [string]$TrayIconFile,
+        [string]$TrayIconLightFile
+    )
+    $created = $false
+    $mutex = New-Object System.Threading.Mutex($true, "Local\$AppId.TaskbarWatcher", [ref]$created)
+    if (-not $created) { return }
+
+    $iconResource = $null
+    $smallIcon = [IntPtr]::Zero; $bigIcon = [IntPtr]::Zero
+    if ($IconFile -and (Test-Path $IconFile)) {
+        $iconResource = "$IconFile,0"
+        $smallIcon = [ClaudeProfiles.Taskbar]::LoadIcon($IconFile, $false)
+        $bigIcon = [ClaudeProfiles.Taskbar]::LoadIcon($IconFile, $true)
+    }
+    $trayDark = $smallIcon; $trayLight = $smallIcon
+    if ($TrayIconFile -and (Test-Path $TrayIconFile)) {
+        $trayDark = [ClaudeProfiles.Taskbar]::LoadIcon($TrayIconFile, $false)
+        $trayLight = $trayDark
+    }
+    if ($TrayIconLightFile -and (Test-Path $TrayIconLightFile)) {
+        $trayLight = [ClaudeProfiles.Taskbar]::LoadIcon($TrayIconLightFile, $false)
+    }
+    $themeKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
+
+    $pids = @()
+    $started = Get-Date
+    $trayDone = [DateTime]::MinValue
+    try {
+        while ($true) {
+            $alive = @(foreach ($p in $pids) { if ([ClaudeProfiles.Taskbar]::IsAlive($p)) { $p } })
+            if ($alive.Count -eq 0) {
+                $alive = @(Get-ClaudeInstancePids -ProfileDir $ProfileDir)
+                # Give the app a minute to start before deciding it is gone.
+                if ($alive.Count -eq 0 -and ((Get-Date) - $started).TotalSeconds -gt 60) { break }
+            }
+            $pids = $alive
+
+            if ($pids.Count) {
+                # The app may redraw its tray icon at any time and there is no
+                # way to read it back, so re-apply ours every few seconds.
+                $refreshTray = ((Get-Date) - $trayDone).TotalSeconds -ge 5
+                if ($refreshTray) {
+                    # Follow the taskbar theme, like the app's own tray icon does.
+                    $light = (Get-ItemProperty $themeKey -ErrorAction SilentlyContinue).SystemUsesLightTheme -eq 1
+                    $trayIcon = if ($light) { $trayLight } else { $trayDark }
+                }
+                foreach ($h in [ClaudeProfiles.Taskbar]::WindowsOf([int[]]$pids)) {
+                    try {
+                        if ([ClaudeProfiles.Taskbar]::GetWindowId($h) -ne $AppId) {
+                            [ClaudeProfiles.Taskbar]::SetWindowId($h, $AppId, $RelaunchCommand, $DisplayName, $iconResource)
+                        }
+                        if ($bigIcon -ne [IntPtr]::Zero) {
+                            $class = [ClaudeProfiles.Taskbar]::GetClass($h)
+                            if ($class -eq 'Chrome_WidgetWin_1') {
+                                [ClaudeProfiles.Taskbar]::SetWindowIcon($h, $smallIcon, $bigIcon)
+                            } elseif ($class -eq 'Electron_NotifyIconHostWindow' -and $refreshTray) {
+                                [void][ClaudeProfiles.Taskbar]::SetTrayIcon($h, $trayIcon, $DisplayName)
+                            }
+                        }
+                    } catch { }
+                }
+                if ($refreshTray) { $trayDone = Get-Date }
+            }
+            Start-Sleep -Milliseconds $(if (((Get-Date) - $started).TotalSeconds -lt 60) { 500 } else { 2000 })
+        }
+    } finally {
+        $mutex.ReleaseMutex()
+        $mutex.Dispose()
+    }
+}

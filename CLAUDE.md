@@ -54,13 +54,55 @@ profile can point `CLAUDE_CONFIG_DIR` at a dedicated directory:
 This is **additive and optional** — omitting it keeps the shared `~/.claude`
 store, which is the default. Don't make it mandatory or hard-code a path.
 
+## Per-profile taskbar identity (`TaskbarId.ps1`)
+
+The taskbar groups buttons by AppUserModelID (AUMID). All instances share the
+package AUMID (`<PackageFamilyName>!Claude`), so without help every profile
+collapses into one button and can't be pinned on its own.
+
+- Isolated profiles get the AUMID `ClaudeProfiles.<data folder name>` (see
+  `Get-ClaudeProfileAppId`). The default `%APPDATA%\Claude` profile keeps the
+  package AUMID, so it stays merged with the regular Claude pin.
+- `Setup.ps1` writes that AUMID onto the shortcut (`System.AppUserModel.ID` via
+  the `.lnk`'s `IPropertyStore`). It also writes a badged icon,
+  `bin\claude-<name>.ico`, unless `-NoProfileBadge` is set.
+- `Launch-Claude.ps1` then calls `Watch-ClaudeWindows`, which sets the same
+  AUMID (plus `RelaunchCommand` / `RelaunchDisplayNameResource` /
+  `RelaunchIconResource`, set *before* the ID) on every top-level window of
+  the instance via `SHGetPropertyStoreForWindow`. The app can create windows at
+  any time, so the launcher stays alive, hidden, until the instance exits. A
+  named mutex keeps it to one watcher per profile.
+- The watcher also uses the badged icon in two other places. It sends
+  `WM_SETICON` to the app's `Chrome_WidgetWin_1` windows (title bar, Alt+Tab),
+  and calls `Shell_NotifyIcon(NIM_MODIFY)` on the tray icon owned by
+  `Electron_NotifyIconHostWindow` to change its icon and its tooltip
+  (`Claude (<name>)`). The tray icon's uID isn't known, so it tries 0–31. The
+  app can redraw its tray icon and there's no way to read it back, so the
+  watcher re-applies every 5 s. The icon handles belong to the watcher, which
+  is one more reason it must live as long as the instance.
+- The tray icon isn't the app icon. `Setup.ps1` (`New-ProfileTrayIcon`) builds
+  `bin\claude-<name>-tray.ico` and `-tray-light.ico` from the app's own
+  `app\resources\Tray-Win32-Dark.ico` (white glyph, dark taskbar) and
+  `Tray-Win32.ico` (black glyph, light taskbar). Each size is drawn from the
+  app's matching frame, with a transparent gap cut around the badge. The watcher
+  picks one by `SystemUsesLightTheme` at every refresh. If the files are
+  missing, it falls back to the badged app icon.
+- Keep the loop cheap: it runs for hours. Check whether processes are alive with
+  `IsAlive` (OpenProcess + wait), not `Get-Process`, which costs ~18 ms per call.
+- The instance is found by its main `Claude.exe` process (no `--type=`) under
+  `WindowsApps\Claude_*\app\`, whose `--user-data-dir` matches the profile.
+  Claude Code's CLI is also called `claude.exe`, so always filter on the path.
+- All of this is additive. If `TaskbarId.ps1` is missing next to the launcher,
+  the launcher behaves exactly as before.
+
 ## Layout
 
 ```
 scripts/
   Launch-Claude.ps1   # resolve exe + Start-Process with --user-data-dir; optional -ConfigDir sets CLAUDE_CONFIG_DIR
   launch.vbs          # run the .ps1 hidden (no console window); finds the .ps1 next to itself; optional 2nd arg = config dir
-  Setup.ps1           # installer: copies scripts to %USERPROFILE%\ClaudeProfiles\bin, extracts a stable bin\claude.ico, makes profiles + desktop shortcuts; -ConfigDir hashtable maps a profile to its own memory store
+  TaskbarId.ps1       # dot-sourced helper: per-profile AUMID on shortcuts + windows (separate taskbar pins)
+  Setup.ps1           # installer: copies scripts to %USERPROFILE%\ClaudeProfiles\bin, extracts a stable bin\claude.ico, makes profiles + desktop shortcuts (with per-profile AUMID + badge icon); -ConfigDir hashtable maps a profile to its own memory store
   Uninstall.ps1       # removes shortcuts (and optionally profile data)
   Build-Exe.ps1       # optional: wrap Launch-Claude.ps1 into an .exe via ps2exe
 ```

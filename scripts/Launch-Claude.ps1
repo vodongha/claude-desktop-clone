@@ -75,3 +75,24 @@ if ($ConfigDir) {
 
 # Launch. Different --user-data-dir => separate singleton lock => parallel instance.
 Start-Process -FilePath $exe -ArgumentList "--user-data-dir=$ProfileDir"
+
+# Give non-default profiles their own taskbar button, so each one can be
+# pinned separately (see TaskbarId.ps1). This process stays behind, hidden, as
+# the window watcher until the instance exits; launching the same profile
+# again while it runs just returns.
+$taskbarHelper = Join-Path $PSScriptRoot 'TaskbarId.ps1'
+if (Test-Path $taskbarHelper) {
+    . $taskbarHelper
+    $appId = Get-ClaudeProfileAppId -ProfileDir $ProfileDir
+    if ($appId) {
+        $profileName = Split-Path $ProfileDir.TrimEnd('\') -Leaf
+        $icon = Join-Path $PSScriptRoot "claude-$profileName.ico"
+        if (-not (Test-Path $icon)) { $icon = Join-Path $PSScriptRoot 'claude.ico' }
+        $relaunch = '"{0}" "{1}" "{2}"' -f (Join-Path $env:WINDIR 'System32\wscript.exe'), (Join-Path $PSScriptRoot 'launch.vbs'), $ProfileDir
+        if ($ConfigDir) { $relaunch += ' "{0}"' -f $ConfigDir }
+        Watch-ClaudeWindows -ProfileDir $ProfileDir -AppId $appId -RelaunchCommand $relaunch `
+            -DisplayName "Claude ($profileName)" -IconFile $icon `
+            -TrayIconFile (Join-Path $PSScriptRoot "claude-$profileName-tray.ico") `
+            -TrayIconLightFile (Join-Path $PSScriptRoot "claude-$profileName-tray-light.ico")
+    }
+}
