@@ -71,6 +71,34 @@ namespace ClaudeProfiles {
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
         [DllImport("shell32.dll")] static extern int SHGetPropertyStoreForWindow(IntPtr h, ref Guid riid, out IPropertyStore ps);
         [DllImport("ole32.dll")] static extern int PropVariantClear(ref PropVariant v);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int n);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr LoadImage(IntPtr h, string name, uint type, int cx, int cy, uint flags);
+        [DllImport("user32.dll")] static extern int GetSystemMetrics(int i);
+        [DllImport("user32.dll")] static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
+        [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+        [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr h, uint ms);
+        [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+
+        // Much cheaper than Get-Process, which snapshots every process.
+        public static bool IsAlive(int pid) {
+            IntPtr h = OpenProcess(0x00100000, false, pid); // SYNCHRONIZE
+            if (h == IntPtr.Zero) return false;
+            try { return WaitForSingleObject(h, 0) == 0x102; } // WAIT_TIMEOUT = still running
+            finally { CloseHandle(h); }
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct NotifyIconData {
+            public int cbSize; public IntPtr hWnd; public uint uID; public uint uFlags;
+            public uint uCallbackMessage; public IntPtr hIcon;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string szTip;
+            public uint dwState; public uint dwStateMask;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string szInfo;
+            public uint uVersion;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string szInfoTitle;
+            public uint dwInfoFlags; public Guid guidItem; public IntPtr hBalloonIcon;
+        }
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern bool Shell_NotifyIconW(uint msg, ref NotifyIconData d);
 
         static PropVariant Str(string s) {
             var v = new PropVariant();
@@ -130,6 +158,45 @@ namespace ClaudeProfiles {
                 }
                 Set(ps, Id, id);
             } finally { Marshal.ReleaseComObject(ps); }
+        }
+
+        public static string GetClass(IntPtr h) {
+            var s = new System.Text.StringBuilder(256);
+            GetClassName(h, s, s.Capacity);
+            return s.ToString();
+        }
+
+        // Loads an .ico at the system's small (big = false) or large icon size.
+        // The handle must stay alive while windows use it, so callers keep it.
+        public static IntPtr LoadIcon(string path, bool big) {
+            int s = GetSystemMetrics(big ? 11 : 49); // SM_CXICON : SM_CXSMICON
+            return LoadImage(IntPtr.Zero, path, 1, s, s, 0x10); // IMAGE_ICON, LR_LOADFROMFILE
+        }
+
+        // Swaps the window's own icon (title bar, Alt+Tab) if it isn't ours yet.
+        public static void SetWindowIcon(IntPtr h, IntPtr small, IntPtr big) {
+            IntPtr cur;
+            const uint WM_GETICON = 0x7F, WM_SETICON = 0x80, SMTO_ABORTIFHUNG = 2;
+            SendMessageTimeout(h, WM_GETICON, (IntPtr)1, IntPtr.Zero, SMTO_ABORTIFHUNG, 500, out cur);
+            if (cur == big) return;
+            SendMessageTimeout(h, WM_SETICON, (IntPtr)0, small, SMTO_ABORTIFHUNG, 500, out cur);
+            SendMessageTimeout(h, WM_SETICON, (IntPtr)1, big, SMTO_ABORTIFHUNG, 500, out cur);
+        }
+
+        // Replaces the icon and tooltip of the tray icon(s) owned by host
+        // (Electron's notify-icon window). The icon ID isn't known, so try the
+        // small range Electron hands out; returns how many were updated.
+        public static int SetTrayIcon(IntPtr host, IntPtr icon, string tip) {
+            int n = 0;
+            for (uint id = 0; id < 32; id++) {
+                var d = new NotifyIconData();
+                d.cbSize = Marshal.SizeOf(typeof(NotifyIconData));
+                d.hWnd = host; d.uID = id;
+                d.uFlags = 0x2 | 0x4 | 0x80; // NIF_ICON | NIF_TIP | NIF_SHOWTIP
+                d.hIcon = icon; d.szTip = tip;
+                if (Shell_NotifyIconW(1, ref d)) n++; // NIM_MODIFY
+            }
+            return n;
         }
 
         public static string GetShortcutId(string lnk) {
@@ -192,24 +259,35 @@ function Get-ClaudeInstancePids {
 }
 
 # Keeps tagging the instance's windows with $AppId for as long as it runs,
-# since the app can create new windows at any time. One watcher per profile.
+# since the app can create new windows at any time. With $IconFile it also
+# swaps the windows' own icon and the tray icon + tooltip, so the profile can
+# be told apart in Alt+Tab and the notification area. One watcher per profile.
 function Watch-ClaudeWindows {
     param(
         [string]$ProfileDir,
         [string]$AppId,
         [string]$RelaunchCommand,
         [string]$DisplayName,
-        [string]$IconResource
+        [string]$IconFile
     )
     $created = $false
     $mutex = New-Object System.Threading.Mutex($true, "Local\$AppId.TaskbarWatcher", [ref]$created)
     if (-not $created) { return }
 
+    $iconResource = $null
+    $smallIcon = [IntPtr]::Zero; $bigIcon = [IntPtr]::Zero
+    if ($IconFile -and (Test-Path $IconFile)) {
+        $iconResource = "$IconFile,0"
+        $smallIcon = [ClaudeProfiles.Taskbar]::LoadIcon($IconFile, $false)
+        $bigIcon = [ClaudeProfiles.Taskbar]::LoadIcon($IconFile, $true)
+    }
+
     $pids = @()
     $started = Get-Date
+    $trayDone = [DateTime]::MinValue
     try {
         while ($true) {
-            $alive = @($pids | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+            $alive = @(foreach ($p in $pids) { if ([ClaudeProfiles.Taskbar]::IsAlive($p)) { $p } })
             if ($alive.Count -eq 0) {
                 $alive = @(Get-ClaudeInstancePids -ProfileDir $ProfileDir)
                 # Give the app a minute to start before deciding it is gone.
@@ -218,13 +296,25 @@ function Watch-ClaudeWindows {
             $pids = $alive
 
             if ($pids.Count) {
+                # The app may redraw its tray icon at any time and there is no
+                # way to read it back, so re-apply ours every few seconds.
+                $refreshTray = ((Get-Date) - $trayDone).TotalSeconds -ge 5
                 foreach ($h in [ClaudeProfiles.Taskbar]::WindowsOf([int[]]$pids)) {
                     try {
                         if ([ClaudeProfiles.Taskbar]::GetWindowId($h) -ne $AppId) {
-                            [ClaudeProfiles.Taskbar]::SetWindowId($h, $AppId, $RelaunchCommand, $DisplayName, $IconResource)
+                            [ClaudeProfiles.Taskbar]::SetWindowId($h, $AppId, $RelaunchCommand, $DisplayName, $iconResource)
+                        }
+                        if ($bigIcon -ne [IntPtr]::Zero) {
+                            $class = [ClaudeProfiles.Taskbar]::GetClass($h)
+                            if ($class -eq 'Chrome_WidgetWin_1') {
+                                [ClaudeProfiles.Taskbar]::SetWindowIcon($h, $smallIcon, $bigIcon)
+                            } elseif ($class -eq 'Electron_NotifyIconHostWindow' -and $refreshTray) {
+                                [void][ClaudeProfiles.Taskbar]::SetTrayIcon($h, $smallIcon, $DisplayName)
+                            }
                         }
                     } catch { }
                 }
+                if ($refreshTray) { $trayDone = Get-Date }
             }
             Start-Sleep -Milliseconds $(if (((Get-Date) - $started).TotalSeconds -lt 60) { 500 } else { 2000 })
         }

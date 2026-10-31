@@ -72,6 +72,16 @@ collapses into one button and can't be pinned on its own.
   the instance via `SHGetPropertyStoreForWindow`. The app can create windows at
   any time, so the launcher stays alive, hidden, until the instance exits. A
   named mutex keeps it to one watcher per profile.
+- The watcher also uses the badged icon in two other places. It sends
+  `WM_SETICON` to the app's `Chrome_WidgetWin_1` windows (title bar, Alt+Tab),
+  and calls `Shell_NotifyIcon(NIM_MODIFY)` on the tray icon owned by
+  `Electron_NotifyIconHostWindow` to change its icon and its tooltip
+  (`Claude (<name>)`). The tray icon's uID isn't known, so it tries 0–31. The
+  app can redraw its tray icon and there's no way to read it back, so the
+  watcher re-applies every 5 s. The icon handles belong to the watcher, which
+  is one more reason it must live as long as the instance.
+- Keep the loop cheap: it runs for hours. Check whether processes are alive with
+  `IsAlive` (OpenProcess + wait), not `Get-Process`, which costs ~18 ms per call.
 - The instance is found by its main `Claude.exe` process (no `--type=`) under
   `WindowsApps\Claude_*\app\`, whose `--user-data-dir` matches the profile.
   Claude Code's CLI is also called `claude.exe`, so always filter on the path.

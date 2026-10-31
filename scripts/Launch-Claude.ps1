@@ -91,6 +91,6 @@ if (Test-Path $taskbarHelper) {
         $relaunch = '"{0}" "{1}" "{2}"' -f (Join-Path $env:WINDIR 'System32\wscript.exe'), (Join-Path $PSScriptRoot 'launch.vbs'), $ProfileDir
         if ($ConfigDir) { $relaunch += ' "{0}"' -f $ConfigDir }
         Watch-ClaudeWindows -ProfileDir $ProfileDir -AppId $appId -RelaunchCommand $relaunch `
-            -DisplayName "Claude ($profileName)" -IconResource "$icon,0"
+            -DisplayName "Claude ($profileName)" -IconFile $icon
     }
 }

@@ -163,10 +163,12 @@ give each profile its own button that you can pin, the setup does two things:
   coloured badge showing the profile's initial (`-NoProfileBadge` turns this off).
   The default-login profile keeps the app's own ID, so it matches the regular
   Claude pin.
-- `Launch-Claude.ps1` puts the same ID on the instance's windows. Because the app
-  can open new windows at any time, the hidden launcher stays running while that
-  profile is open and exits with it. Launching the profile again while it runs
-  doesn't start a second watcher.
+- `Launch-Claude.ps1` puts the same ID on the instance's windows. It also swaps in
+  the badged icon for the window (title bar, Alt+Tab) and the tray icon, and sets
+  the tray tooltip to `Claude (<name>)`, so you can tell which tray icon to quit.
+  Because the app can open new windows (or redraw its tray icon) at any time, the
+  hidden launcher stays running while that profile is open and exits with it.
+  Launching the profile again while it runs doesn't start a second watcher.
 
 To pin a profile, right-click its desktop shortcut and choose **Pin to taskbar**.
 Clicking the pin starts that profile, or switches to it if it's already open.
